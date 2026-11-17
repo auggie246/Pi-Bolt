@@ -67,7 +67,7 @@ jobs:
     steps:
       - name: The tag
         run: |
-          printf '%s' "$TAG" | grep -Eq '^bolt-v[0-9]+\.[0-9]+\.[0-9]+$' || { echo "not a release tag: $TAG"; exit 1; }
+          printf '%s' "$TAG" | grep -Eq '^bolt-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$' || { echo "not a release tag: $TAG"; exit 1; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/tags/${{ env.TAG }}
@@ -75,12 +75,15 @@ jobs:
       - id: check
         run: |
           version=$(cat VERSION)
-          test "bolt-v$version" = "$TAG" || { echo "VERSION is $version, the tag is $TAG"; exit 1; }
+          # (A suffixed tag, bolt-v1.2.1-shim, builds this VERSION and differs from it only in its name.)
+          case "$TAG" in "bolt-v$version" | "bolt-v$version"-*) ;; *) { echo "VERSION is $version, the tag is $TAG"; exit 1; } ;; esac
           test "$(python3 -c 'import json; print(json.load(open("npm/package.json"))["version"])')" = "$version"
           grep -q "^VERSION=$version\$" npm/bin/pi-bolt
           pi=$(python3 -c 'import json; print(json.load(open("sources.json"))["pi"]["tag"][1:])')
           test -f "profiles/pi-$pi/bytecode.order" || { echo "no training profile for Pi $pi (scripts/train-profile.sh)"; exit 1; }
-          test -f "docs/releases/$version.md" || { echo "no release notes: docs/releases/$version.md"; exit 1; }
+          notes="docs/releases/${TAG#bolt-v}.md"
+          test -f "$notes" || notes="docs/releases/$version.md"
+          test -f "$notes" || { echo "no release notes: $notes"; exit 1; }
           stamp=$(scripts/runtime-stamp.sh)
           previous=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>/dev/null || true)
           released=""
@@ -604,18 +607,20 @@ jobs:
           cat SHA256SUMS
       - name: Draft
         run: |
+          notes="docs/releases/${TAG#bolt-v}.md"
+          test -f "$notes" || notes="docs/releases/$VERSION.md"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             if [ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" != true ]; then
               echo "::error::$TAG is already published; a published release is not changed (run with dry_run to test)"
               exit 1
             fi
-            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft --notes-file "docs/releases/$VERSION.md"
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft --notes-file "$notes"
             # (A signature of the SHA256SUMS replaced here no longer holds, in either form.)
             gh release delete-asset "$TAG" SHA256SUMS.sig --repo "$GITHUB_REPOSITORY" --yes 2>/dev/null || true
             gh release delete-asset "$TAG" SHA256SUMS.sshsig --repo "$GITHUB_REPOSITORY" --yes 2>/dev/null || true
             gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber release/*
           else
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag --title "Pi-Bolt $VERSION" --notes-file "docs/releases/$VERSION.md" release/*
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag --title "Pi-Bolt ${TAG#bolt-v}" --notes-file "$notes" release/*
           fi
           sum=$(sha256sum release/SHA256SUMS | cut -c1-64)
           if [ "$AUTO_RELEASE" = true ]; then
